@@ -68,6 +68,11 @@ class Browser:
         self.canvas.pack()
         self.scroll = 0
         self.window.bind("<Down>", self.scroll_down)
+        self.window.bind("<Up>", self.scroll_up)
+
+        # Linux: Binding to <Button-4> and <Button-5> is being used
+        self.canvas.bind('<Button-4>', self.scroll_up)
+        self.canvas.bind('<Button-5>', self.scroll_down)
 
     def load(self, url):
         body = url.request()
@@ -85,6 +90,11 @@ class Browser:
     def scroll_down(self, e):
         self.scroll += SCROLL_STEP
         self.draw()
+
+    def scroll_up(self, e):
+        if self.scroll > 0:
+            self.scroll -= SCROLL_STEP
+            self.draw()
 
 def layout(text):
     display_list = []
