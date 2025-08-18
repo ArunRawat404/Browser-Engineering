@@ -64,7 +64,7 @@ class Browser:
     def __init__(self):
         self.window = tkinter.Tk()
         self.canvas = tkinter.Canvas(
-            self.window, 
+            self.window,
             width=WIDTH,
             height=HEIGHT
         )
@@ -92,9 +92,9 @@ class Browser:
     def scroll_down(self, e):
         self.scroll += SCROLL_STEP
         self.draw()
-    
+
     def scroll_up(self, e):
-        if self.scroll > 0:    
+        if self.scroll > 0:
             self.scroll -= SCROLL_STEP
             self.draw()
 
