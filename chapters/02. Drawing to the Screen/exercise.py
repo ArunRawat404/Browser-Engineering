@@ -3,11 +3,13 @@ import ssl
 import time
 import gzip
 import tkinter
+import os
 
 WIDTH, HEIGHT = 800, 600
 HSTEP, VSTEP = 13, 18
 SCROLL_STEP = 100
 SCROLLBAR_WIDTH = 15
+EMOJI_OFFSET_Y = 3
 
 # Will store socket connection {(host, port): socket}
 open_sockets = {}
@@ -17,38 +19,51 @@ cache = {}
 
 class URL:
     def __init__(self, url):
-        self.scheme, url_body = url.split(":", 1)
-        assert self.scheme in ["http", "https", "file", "data", "view-source"], "Unsupported scheme"
+        try:
+            if ":" not in url:
+                self.scheme = "about"
+                raise ValueError("Malformed URL: no scheme found")
 
-        if self.scheme == "data":
-            self.MIME_type, self.data = url_body.split(",", 1)
-            return
-        elif self.scheme == "view-source":
-            self.actual_url = URL(url_body)
-            return
+            self.scheme, url_body = url.split(":", 1)
+            assert self.scheme in ["http", "https", "file", "data", "view-source", "about"], "Unsupported scheme"
 
-        if url_body.startswith("//"):
-            url_body = url_body[2:]
+            if self.scheme == "data":
+                self.MIME_type, self.data = url_body.split(",", 1)
+                return
+            elif self.scheme == "view-source":
+                self.actual_url = URL(url_body)
+                return
+            elif self.scheme == "about":
+                self.about_page = url_body if url_body else "blank"
+                return
 
-        if self.scheme == "http":
-            self.port = 80
-        elif self.scheme == "https":
-            self.port = 443
+            if url_body.startswith("//"):
+                url_body = url_body[2:]
 
-        # For file URL the host and port are not needed so can be None
-        if self.scheme == "file":
-            self.host = None
-            self.port = None
-            self.path = url_body
-        else:
-            if "/" not in url_body:
-                url_body =url_body + "/"
-            self.host, path = url_body.split("/", 1)
-            self.path = "/" + path
+            if self.scheme == "http":
+                self.port = 80
+            elif self.scheme == "https":
+                self.port = 443
 
-            if ":" in self.host:
-                self.host, port = self.host.split(":", 1)
-                self.port = int(port)
+            # For file URL the host and port are not needed so can be None
+            if self.scheme == "file":
+                self.host = None
+                self.port = None
+                self.path = url_body
+            else:
+                if "/" not in url_body:
+                    url_body =url_body + "/"
+                self.host, path = url_body.split("/", 1)
+                self.path = "/" + path
+
+                if ":" in self.host:
+                    self.host, port = self.host.split(":", 1)
+                    self.port = int(port)
+        
+        except Exception as e:
+            print(f"Malformed URL '{url}': {e}. Treating as about:blank")
+            self.scheme = "about"
+            self.about_page = "blank"
 
     def request(self, redirects=0):
         if self.scheme == "view-source":
@@ -59,6 +74,13 @@ class URL:
                 return file.read()
         elif self.scheme == "data":
             return self.data
+        # show a blank page in case of malformed URL
+        elif self.scheme == "about":
+            if self.about_page == "blank":
+                return ""
+            else:
+                # Could add more about: pages here in the future
+                return f"About page: {self.about_page}"
         else:
             socket_key = (self.host, self.port)
             if socket_key in open_sockets:
@@ -190,7 +212,7 @@ class URL:
 
 
 class Browser:
-    def __init__(self):
+    def __init__(self, rtl=False):
         self.window = tkinter.Tk()
         self.canvas = tkinter.Canvas(
             self.window,
@@ -203,6 +225,7 @@ class Browser:
         self.text = ""
         self.display_list = []
         self.page_height = 0
+        self.rtl = rtl
         
         self.window.bind("<Down>", self.scroll_down)
         self.window.bind("<Up>", self.scroll_up)
@@ -215,25 +238,39 @@ class Browser:
         self.canvas.bind('<Configure>', self.on_resize)
 
     def load(self, url):
-        body = url.request()
-        if url.scheme == "view-source":
-            # Show raw HTML instead of rendering
-            self.text = body
-            self.display_list, self.page_height = layout(body)
-        else:
+        try:
+            body = url.request()
+            if url.scheme == "view-source":
+                # Show raw HTML instead of rendering
+                self.text = body
+                self.display_list, self.page_height = layout(body, self.rtl)
+            else:
+                self.text = lex(body)
+                self.display_list, self.page_height = layout(self.text, self.rtl)
+        except Exception as e:
+            print(f"Error loading page: {e}")
+            blank_url = URL("about:blank")
+            body = blank_url.request()
             self.text = lex(body)
-            self.display_list, self.page_height = layout(self.text)
+            self.display_list, self.page_height = layout(self.text, self.rtl)
         self.draw()
 
     def draw(self):
         # clear the old content before drawing the new content
         self.canvas.delete("content")
-        for x, y, c in self.display_list:
+        for kind, x, y, c in self.display_list:
             # If a character starts below the bottom of the screen, skip it.
             if y > self.scroll + HEIGHT: continue
             # If the character’s bottom edge is above the window’s top, skip it.
             if y + VSTEP < self.scroll: continue
-            self.canvas.create_text(x, y - self.scroll, text=c, tags="content")
+            if kind == "emoji":
+                self.canvas.create_image(
+                    x, y - self.scroll + EMOJI_OFFSET_Y, image=c, anchor="nw", tags="content"
+                )
+            else:
+                self.canvas.create_text(
+                    x, y - self.scroll, text=c, anchor="nw", tags="content"
+                )
         self.draw_scrollbar() 
 
     def scroll_down(self, e):
@@ -251,7 +288,7 @@ class Browser:
         WIDTH = e.width
         HEIGHT = e.height
 
-        self.display_list, self.page_height = layout(self.text)
+        self.display_list, self.page_height = layout(self.text, self.rtl)
 
         self.draw()
 
@@ -280,6 +317,28 @@ class Browser:
             fill="white",
             tags="scrollbar"
         )
+
+
+class EmojiManager:
+    def __init__(self, emoji_dir="openmoji"):
+        self.emoji_dir = emoji_dir
+        self.cache = {}  # {filename: PhotoImage}
+
+    def get_image(self, char):
+        code_point = f"{ord(char):X}".upper()
+        filename = os.path.join(self.emoji_dir, f"{code_point}.png")
+        if not os.path.exists(filename):
+            return None
+        if filename not in self.cache:
+            self.cache[filename] = tkinter.PhotoImage(file=filename)
+        return self.cache[filename]
+
+    def is_possible_emoji(self, char):
+        # Basic Unicode range for emoji (can be expanded for more)
+        return (0x1F600 <= ord(char) <= 0x1F64F) or (0x1F300 <= ord(char) <= 0x1F5FF)
+        
+emoji_manager = EmojiManager()
+
 
 def decode_entities(text):
     ENTITIES = {
@@ -333,19 +392,38 @@ def lex(body):
     return decoded_text
 
 
-def layout(text):
+def layout(text, rtl):
     display_list = []
-    cursor_x, cursor_y = HSTEP, VSTEP
+    if rtl:
+        cursor_x = WIDTH - HSTEP - SCROLLBAR_WIDTH
+        step = -HSTEP
+    else:
+        cursor_x = HSTEP
+        step = +HSTEP
+    cursor_y = VSTEP
     for c in text:
         if c == "\n":
-            cursor_x = HSTEP
+            if rtl:
+                cursor_x = WIDTH - HSTEP - SCROLLBAR_WIDTH
+            else:
+                cursor_x = HSTEP
             cursor_y += VSTEP
+        elif emoji_manager.is_possible_emoji(c):
+            img = emoji_manager.get_image(c)
+            if img:
+                display_list.append(("emoji", cursor_x, cursor_y, img))
+            else:
+                display_list.append(("text", cursor_x, cursor_y, c))
+            cursor_x += step
         else:
-            display_list.append((cursor_x, cursor_y, c))
-            cursor_x += HSTEP
+            display_list.append(("text", cursor_x, cursor_y, c))
+            cursor_x += step
 
-        if cursor_x >= WIDTH - HSTEP - SCROLLBAR_WIDTH:
-            cursor_x = HSTEP
+        if (not rtl and cursor_x >= WIDTH - HSTEP - SCROLLBAR_WIDTH) or (rtl and cursor_x <= HSTEP):
+            if rtl:
+                cursor_x = WIDTH - HSTEP - SCROLLBAR_WIDTH
+            else:
+                cursor_x = HSTEP
             cursor_y += VSTEP
 
     return display_list, cursor_y
@@ -355,8 +433,15 @@ DEFAULT_FILE = "file:///home/arun/Documents/Coding/Browser/Browser-Engineering/t
 
 if __name__ == "__main__":
     import sys
-    if len(sys.argv) > 1:
-        Browser().load(URL(sys.argv[1]))
-    else:
-        Browser().load(URL(DEFAULT_FILE))
+    import argparse
+
+    parser = argparse.ArgumentParser(description="A browser CLI")
+    parser.add_argument('url', nargs='?', default=DEFAULT_FILE, help='URL to load')
+    parser.add_argument('--rtl', action='store_true', help='Enable right-to-left text flow')
+
+    args = parser.parse_args()
+    if args.rtl:
+        print("Right-to-left text direction enabled.")
+
+    Browser(rtl=args.rtl).load(URL(args.url))
     tkinter.mainloop()
